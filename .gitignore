@@ -1,0 +1,63 @@
+# Dataset dosyaları
+dataset/
+*.wav
+*.mp3
+*.flac
+*.ogg
+
+# CSV ve JSON dosyaları
+*.csv
+*.json
+
+# Model checkpoint'leri
+checkpoints/
+*.pt
+*.pth
+
+# Log dosyaları
+logs/
+tensorboard_logs/
+*.log
+
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+build/
+develop-eggs/
+dist/
+downloads/
+eggs/
+.eggs/
+lib/
+lib64/
+parts/
+sdist/
+var/
+wheels/
+*.egg-info/
+.installed.cfg
+*.egg
+
+# Ortam dosyaları
+.env
+.venv
+env/
+venv/
+ENV/
+env.bak/
+venv.bak/
+
+# IDE dosyaları
+.idea/
+.vscode/
+*.swp
+*.swo
+.DS_Store
+
+# Mel spektrogramlar ve diğer çıktı dosyaları
+*.npy
+*.npz
+mels/
