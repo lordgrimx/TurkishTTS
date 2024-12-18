@@ -1,175 +1,208 @@
+import matplotlib
 import torch
 import numpy as np
+import os
+from tqdm import tqdm
+import argparse
+import matplotlib.pyplot as plt
+from pathlib import Path
+
 from model.fastspeech2 import FastSpeech2
 from data.dataset import TurkishTTSDataset
 from config.model_config import ModelConfig
-import argparse
-from text import text_to_phonemes  # Türkçe metin-fonem dönüşümü için
-
-def load_checkpoint(checkpoint_path, model, device):
-    """
-    Checkpoint'i yükler. Farklı checkpoint formatlarını destekler.
-    """
-    print(f"Checkpoint yükleniyor: {checkpoint_path}")
+matplotlib.use('Agg')  # GUI olmadan çalışması için backend'i ayarla
+import matplotlib.pyplot as plt
+def load_model(checkpoint_path, config, device):
+    """Eğitilmiş modeli yükle"""
+    # Önce checkpoint'i yükle
     checkpoint = torch.load(checkpoint_path, map_location=device)
     
-    # Checkpoint formatını kontrol et
-    if isinstance(checkpoint, dict):
-        if 'model' in checkpoint:
-            # Model durumu 'model' anahtarı altında
-            print("'model' anahtarı altında model durumu bulundu")
-            model.load_state_dict(checkpoint['model'])
-        elif 'model_state_dict' in checkpoint:
-            # Model durumu 'model_state_dict' anahtarı altında
-            print("'model_state_dict' anahtarı altında model durumu bulundu")
-            model.load_state_dict(checkpoint['model_state_dict'])
-        else:
-            # Doğrudan state_dict
-            print("Doğrudan state_dict formatında model durumu bulundu")
-            model.load_state_dict(checkpoint)
-    else:
-        # Doğrudan model durumu
-        print("Doğrudan model durumu formatında bulundu")
-        model.load_state_dict(checkpoint)
+    # Checkpoint'teki embedding boyutunu al
+    embedding_size = checkpoint['model']['embedding.weight'].shape[0]
+    print(f"Checkpoint'teki fonem sayısı: {embedding_size}")
     
-    print(f"Model başarıyla yüklendi: {checkpoint_path}")
+    # Model konfigürasyonunu güncelle
+    config.phoneme_vocab_size = embedding_size
+    
+    model = FastSpeech2(
+        max_seq_len=config.max_seq_len,
+        phoneme_vocab_size=config.phoneme_vocab_size,  # Güncellenmiş değer
+        encoder_dim=config.encoder_dim,
+        encoder_n_layer=config.encoder_n_layer,
+        encoder_head=config.encoder_head,
+        encoder_conv1d_filter_size=config.encoder_conv1d_filter_size,
+        encoder_conv1d_kernel_size=config.encoder_conv1d_kernel_size,
+        decoder_dim=config.decoder_dim,
+        decoder_n_layer=config.decoder_n_layer,
+        decoder_head=config.decoder_head,
+        decoder_conv1d_filter_size=config.decoder_conv1d_filter_size,
+        decoder_conv1d_kernel_size=config.decoder_conv1d_kernel_size,
+        n_mel_channels=config.n_mel_channels
+    ).to(device)
+    
+    # Model ağırlıklarını yükle
+    model.load_state_dict(checkpoint['model'])
+    model.eval()
     return model
 
-def text_to_sequence(text, dataset):
-    """Metni fonem ID dizisine çevirir"""
-    # Metni fonemlere çevir
-    phonemes = text_to_phonemes(text)
-    # Fonemleri ID'lere çevir
-    phoneme_ids = [dataset.phoneme_to_id[p] for p in phonemes]
-    return torch.LongTensor(phoneme_ids)
-
-def generate_default_durations(phoneme_length, mean_duration=5):
-    """Basit bir duration tahmini yapar"""
-    return torch.ones(phoneme_length) * mean_duration
-def print_available_phonemes(dataset):
-    """Dataset'teki mevcut fonemleri gösterir"""
-    print("\nMevcut fonemler:")
-    print(sorted(dataset.phoneme_to_id.keys()))
-    print("\nToplam fonem sayısı:", len(dataset.phoneme_to_id))
-
-def text_to_sequence(text, dataset):
-    """Metni fonem ID dizisine çevirir"""
-    # Önce mevcut fonemleri göster
-    print_available_phonemes(dataset)
+def generate_mel_spectrograms(model, dataset, output_dir, device, visualize=True):
+    """Veri setindeki her örnek için mel spektrogram üret"""
+    mel_dir = os.path.join(output_dir, "mels")
+    plot_dir = os.path.join(output_dir, "plots")
+    os.makedirs(mel_dir, exist_ok=True)
     
-    # Metni fonemlere çevir
-    phonemes = text_to_phonemes(text)
-    print("\nÇevrilen fonemler:", phonemes)
+    if visualize:
+        os.makedirs(plot_dir, exist_ok=True)
     
-    # Fonemleri ID'lere çevir
-    try:
-        phoneme_ids = []
-        for p in phonemes:
-            if p in dataset.phoneme_to_id:
-                phoneme_ids.append(dataset.phoneme_to_id[p])
-            else:
-                print(f"Uyarı: '{p}' fonemi dataset'te bulunamadı, atlanıyor")
-                
-        if not phoneme_ids:
-            raise ValueError("Hiçbir geçerli fonem bulunamadı!")
+    metadata = []
+    
+    with torch.no_grad():
+        for idx in tqdm(range(len(dataset)), desc="Mel spektrogramlar üretiliyor"):
+            # Veri örneğini al
+            data = dataset[idx]
+            phonemes = data['phonemes'].unsqueeze(0).to(device)
+            phoneme_lengths = data['phoneme_length'].unsqueeze(0).to(device)
             
-        return torch.LongTensor(phoneme_ids)
-    except Exception as e:
-        print(f"\nHata: Fonem-ID dönüşümünde sorun: {str(e)}")
-        raise
+            # Mel spektrogramı üret
+            mel_output, *_ = model(
+                phonemes,
+                phoneme_lengths
+            )
+            
+            # Numpy dizisine çevir
+            mel_output = mel_output.squeeze(0).cpu().numpy()
+            
+            # Mel spektrogramı kaydet
+            mel_filename = f"mel_{idx:04d}.npy"
+            mel_path = os.path.join(mel_dir, mel_filename)
+            np.save(mel_path, mel_output)
+            
+            # Görselleştirme
+            if visualize:
+                plot_path = os.path.join(plot_dir, f"mel_{idx:04d}.png")
+                plot_mel(
+                    mel_output,
+                    title=f"Mel Spectrogram {idx}",
+                    save_path=plot_path
+                )
+            
+            # Metadata'ya ekle (sadece dosya adını kaydet)
+            metadata.append(f"{mel_filename}")
+    
+    # Metadata'yı kaydet
+    metadata_path = os.path.join(output_dir, "metadata.txt")
+    with open(metadata_path, "w", encoding="utf-8") as f:
+        f.write("\n".join(metadata))
+    
+    print(f"\nToplam {len(metadata)} mel spektrogram üretildi.")
+    print(f"Mel spektrogramlar: {mel_dir}")
+    if visualize:
+        print(f"Görselleştirmeler: {plot_dir}")
+    print(f"Metadata: {metadata_path}")
 
-def inference_from_text(args):
-    # Cihazı belirle
+def plot_mel(mel, title="Mel Spectrogram", save_path=None):
+    """Mel spektrogramı görselleştir"""
+    plt.figure(figsize=(12, 6))
+    plt.imshow(mel, aspect='auto', origin='lower')
+    plt.colorbar(format='%+2.0f dB')
+    plt.title(title)
+    plt.xlabel('Frames')
+    plt.ylabel('Mel Channels')
+    plt.tight_layout()
+    
+    if save_path:
+        plt.savefig(save_path)
+        plt.close()
+    else:
+        plt.show()
+
+def generate_single_mel(model, text, device, output_dir="output", visualize=True):
+    """Tek bir metin için mel spektrogram üret"""
+    from text import process_text  # Güncellenmiş text modülünden process_text'i import et
+    
+    # Çıktı dizinlerini oluştur
+    os.makedirs(output_dir, exist_ok=True)
+    if visualize:
+        plot_dir = os.path.join(output_dir, "plot")
+        os.makedirs(plot_dir, exist_ok=True)
+    
+    # Metni fonem ID'lerine dönüştür
+    phoneme_ids = process_text(text, return_ids=True)
+    
+    # Tensor'lara çevir
+    phoneme_tensor = torch.LongTensor(phoneme_ids).unsqueeze(0).to(device)
+    phoneme_lengths = torch.LongTensor([len(phoneme_ids)]).to(device)
+    
+    # Mel spektrogramı üret
+    with torch.no_grad():
+        mel_output, *_ = model(
+            phoneme_tensor,
+            phoneme_lengths
+        )
+    
+    # Numpy dizisine çevir
+    mel_output = mel_output.squeeze(0).cpu().numpy()
+    
+    # Mel spektrogramı kaydet
+    mel_path = os.path.join(output_dir, "mel_output.npy")
+    np.save(mel_path, mel_output)
+    
+    # Görselleştirme
+    if visualize:
+        plot_path = os.path.join(plot_dir, "mel_spectrogram.png")
+        plot_mel(
+            mel_output,
+            title=f"Generated Mel Spectrogram for: {text}",
+            save_path=plot_path
+        )
+    
+    print(f"\nMel spektrogram üretildi.")
+    print(f"Mel spektrogram: {mel_path}")
+    if visualize:
+        print(f"Görselleştirme: {plot_dir}")
+    
+    return mel_output
+
+def main(args):
+    # Device
     device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
     print(f"Kullanılan cihaz: {device}")
-
-    try:
-        # Dataset'i yükle
-        print("Dataset yükleniyor...")
-        dataset = TurkishTTSDataset(args.csv_path, args.json_path)
-        print("Dataset yüklendi")
-
-        # Model oluştur
-        print("Model oluşturuluyor...")
-        model = FastSpeech2(
-            max_seq_len=ModelConfig.max_seq_len,
-            phoneme_vocab_size=dataset.get_phoneme_vocab_size(),
-            encoder_dim=ModelConfig.encoder_dim,
-            encoder_n_layer=ModelConfig.encoder_n_layer,
-            encoder_head=ModelConfig.encoder_head,
-            encoder_conv1d_filter_size=ModelConfig.encoder_conv1d_filter_size,
-            encoder_conv1d_kernel_size=ModelConfig.encoder_conv1d_kernel_size,
-            decoder_dim=ModelConfig.decoder_dim,
-            decoder_n_layer=ModelConfig.decoder_n_layer,
-            decoder_head=ModelConfig.decoder_head,
-            decoder_conv1d_filter_size=ModelConfig.decoder_conv1d_filter_size,
-            decoder_conv1d_kernel_size=ModelConfig.decoder_conv1d_kernel_size,
-            n_mel_channels=ModelConfig.n_mel_channels
-        ).to(device)
-        print("Model oluşturuldu")
-
-        # Checkpoint'i yükle
-        print("Checkpoint yükleniyor...")
-        model = load_checkpoint(args.checkpoint_path, model, device)
-        model.eval()
-        print("Checkpoint yüklendi")
-
-        # Metni fonem dizisine çevir
-        print(f"Metin işleniyor: {args.text}")
-        phoneme_ids = text_to_sequence(args.text, dataset)
-        phoneme_length = torch.tensor([len(phoneme_ids)])
-        
-        # Basit duration tahmini
-        duration = generate_default_durations(len(phoneme_ids))
-        mel_length = torch.tensor([duration.sum().item()])
-
-        # Tensörleri GPU'ya taşı ve batch boyutu ekle
-        phonemes = phoneme_ids.unsqueeze(0).to(device)
-        phoneme_length = phoneme_length.to(device)
-        duration = duration.unsqueeze(0).to(device)
-        mel_length = mel_length.to(device)
-
-        print(f"Girdi metni: {args.text}")
-        print(f"Fonem dizisi uzunluğu: {phoneme_length.item()}")
-        print(f"Tahmini mel uzunluğu: {mel_length.item()}")
-
-        # Inference
-        print("Mel spektrogram üretiliyor...")
-        with torch.no_grad():
-            mel_output, _, _, _ = model(
-                phonemes,
-                phoneme_length,
-                duration,
-                mel_length
-            )
-
-        # Sonuçları kaydet
-        mel_output = mel_output.squeeze(0).cpu().numpy()
-        np.save(args.output_path, mel_output)
-        print(f"Mel spektrogram kaydedildi: {args.output_path}")
-
-        # Görselleştirme
-        print("Görsel oluşturuluyor...")
-        import matplotlib.pyplot as plt
-        plt.figure(figsize=(10, 4))
-        plt.imshow(mel_output.T, aspect='auto', origin='lower')
-        plt.colorbar()
-        plt.title(f'Generated Mel-spectrogram for: {args.text}')
-        plt.tight_layout()
-        plt.savefig(args.output_path.replace('.npy', '.png'))
-        print(f"Görsel kaydedildi: {args.output_path.replace('.npy', '.png')}")
-
-    except Exception as e:
-        print(f"Hata oluştu: {str(e)}")
-        raise e
+    
+    # Model yükle
+    model = load_model(args.checkpoint_path, ModelConfig, device)
+    
+    if args.text:
+        # Tek bir metin için mel spektrogram üret
+        generate_single_mel(model, args.text, device, args.output_dir, args.visualize)
+    else:
+        # Dataset oluştur ve tüm örnekler için mel spektrogram üret
+        dataset = TurkishTTSDataset(
+            csv_path=args.csv_path,
+            json_path=args.json_path
+        )
+        generate_mel_spectrograms(model, dataset, args.output_dir, device, args.visualize)
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()
-    parser.add_argument('--checkpoint_path', required=True, help='Model checkpoint dosya yolu')
-    parser.add_argument('--csv_path', required=True, help='Dataset CSV dosya yolu')
-    parser.add_argument('--json_path', required=True, help='Dataset JSON dosya yolu')
-    parser.add_argument('--text', required=True, help='Sentezlenecek metin')
-    parser.add_argument('--output_path', default='output_mel.npy', help='Çıktı mel spektrogram dosya yolu')
+    parser.add_argument('--checkpoint_path', type=str, required=True,
+                        help='FastSpeech2 checkpoint dosyasının yolu')
+    parser.add_argument('--text', type=str,
+                        help='Dönüştürülecek metin')
+    parser.add_argument('--csv_path', type=str,
+                        help='Veri seti CSV dosyasının yolu')
+    parser.add_argument('--json_path', type=str,
+                        help='Metadata JSON dosyasının yolu')
+    parser.add_argument('--output_dir', type=str, default='generated_mels',
+                        help='Üretilen mel spektrogramların kaydedileceği dizin')
+    parser.add_argument('--visualize', action='store_true',
+                        help='Mel spektrogramları görselleştir')
     
     args = parser.parse_args()
-    inference_from_text(args) 
+    
+    # Argüman kontrolü
+    if args.text and (args.csv_path or args.json_path):
+        raise ValueError("Ya text parametresi ya da csv/json parametreleri kullanılmalıdır, ikisi birden değil.")
+    if not args.text and (not args.csv_path or not args.json_path):
+        raise ValueError("Text parametresi verilmediyse csv_path ve json_path zorunludur.")
+    
+    main(args) 

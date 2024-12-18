@@ -61,3 +61,13 @@ venv.bak/
 *.npy
 *.npz
 mels/
+
+# Diğer dosyalar
+generated_mels_for_hifigan/
+
+# HiFi-GAN dizinleri
+hifi_gan/checkpoints/
+hifi_gan/checkpoints2/
+hifi_gan/logs/
+hifi_gan/datasets/
+

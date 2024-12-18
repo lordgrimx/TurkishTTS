@@ -4,3 +4,7 @@ pandas
 tqdm
 tensorboard
 librosa
+torchaudio
+scipy
+matplotlib
+soundfile

@@ -164,6 +164,13 @@ class FastSpeech2(nn.Module):
         
         # Mel-spec projector
         self.mel_linear = nn.Linear(decoder_dim, n_mel_channels)
+        
+        # Dropout değerlerini artır
+        self.dropout = nn.Dropout(0.2)
+        
+        # Layer normalization ekle
+        self.encoder_norm = nn.LayerNorm(encoder_dim)
+        self.decoder_norm = nn.LayerNorm(decoder_dim)
 
     def forward(self, src_seq, src_len, duration_target=None, mel_len=None):
         batch_size = src_seq.shape[0]
@@ -180,6 +187,10 @@ class FastSpeech2(nn.Module):
         for enc_layer in self.encoder:
             x, _ = enc_layer(x)
         encoder_output = x
+        
+        # Encoder çıkışına dropout ve normalization ekle
+        encoder_output = self.dropout(encoder_output)
+        encoder_output = self.encoder_norm(encoder_output)
         
         # Length regulation
         if self.training and duration_target is not None:
@@ -205,6 +216,10 @@ class FastSpeech2(nn.Module):
         decoder_output = output + decoder_position
         for dec_layer in self.decoder:
             decoder_output, _ = dec_layer(decoder_output)
+        
+        # Decoder çıkışına dropout ve normalization ekle
+        decoder_output = self.dropout(decoder_output)
+        decoder_output = self.decoder_norm(decoder_output)
         
         # Mel-spec projection
         mel_output = self.mel_linear(decoder_output)
